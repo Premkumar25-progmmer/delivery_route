@@ -1,0 +1,621 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Delivery Route Optimization</title>
+
+  <!-- Leaflet -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <!-- jsPDF for PDF export -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+
+  <style>
+    :root{
+      --bg: #eef2f7; --card: rgba(255,255,255,0.95); --muted:#6b7280;
+      --accent-from:#2e86de; --accent-to:#6c5ce7;
+    }
+    [data-theme="dark"]{ --bg:#071025; --card: rgba(12,18,28,0.85); --muted:#9aa6bf; }
+    *{box-sizing:border-box}
+    body{ margin:0; font-family:Inter, "Segoe UI", Arial; background:linear-gradient(180deg,var(--bg),#f3f6fb 120%); color:#0b1220; min-height:100vh; display:flex; flex-direction:column;}
+    header.appbar{ padding:14px 20px; background:linear-gradient(90deg,var(--accent-from),var(--accent-to)); color:#fff; display:flex; justify-content:space-between; align-items:center;}
+    .wrap{ display:flex; gap:18px; padding:16px; align-items:flex-start; }
+    .sidebar{ width:380px; background:var(--card); border-radius:12px; padding:14px; box-shadow:0 10px 30px rgba(0,0,0,0.06); max-height:calc(100vh - 150px); overflow:auto;}
+    label{ display:block; margin-bottom:6px; font-weight:700; }
+    input, select, textarea{ width:100%; padding:10px; border-radius:8px; border:1px solid rgba(0,0,0,0.06); }
+    .dest-list{ display:flex; flex-direction:column; gap:8px; margin-bottom:8px }
+    .dest-row{ display:flex; gap:8px; align-items:center }
+    .btn{ padding:10px 12px; border-radius:10px; border:none; background:var(--accent-from); color:#fff; font-weight:700; cursor:pointer }
+    .btn.ghost{ background:transparent; border:1px solid rgba(0,0,0,0.06); color:var(--muted) }
+    .mapcard{ flex:1; position:relative; border-radius:16px; overflow:hidden; min-height:520px }
+    #map{ width:100%; height:520px; display:block }
+    .anim-overlay{ position:absolute; left:18px; right:18px; bottom:18px; z-index:9999; display:flex; gap:12px; justify-content:space-between; pointer-events:none; }
+    .anim-panel{ background:var(--card); padding:10px 12px; border-radius:12px; box-shadow:0 10px 30px rgba(0,0,0,0.08); border:1px solid rgba(0,0,0,0.04); display:flex; gap:8px; align-items:center; pointer-events:auto; }
+    .progress-wrap{ width:420px; display:flex; flex-direction:column; gap:6px; }
+    .progress{ height:8px; width:100%; background:rgba(0,0,0,0.06); border-radius:8px; overflow:hidden; }
+    .progress > i{ display:block; height:100%; width:0%; background:linear-gradient(90deg,var(--accent-from),var(--accent-to)); transition:width 120ms linear; }
+    .muted{ color:var(--muted); font-size:13px }
+    .status-bubble{ padding:6px 8px; border-radius:10px; background:linear-gradient(90deg,var(--accent-from),var(--accent-to)); color:#fff; font-weight:700; }
+    .saved-panel{ margin-top:12px; background: linear-gradient(180deg, rgba(0,0,0,0.02), transparent); padding:10px; border-radius:10px; border:1px dashed rgba(0,0,0,0.04); }
+    .saved-list-item{ padding:8px; border-radius:8px; display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:6px; background:rgba(0,0,0,0.02); }
+    @media (max-width:980px){ .wrap{ flex-direction:column } .sidebar{ width:100% } #map{ height:420px } .progress-wrap{ width:220px } }
+  </style>
+</head>
+<body data-theme="light">
+  <header class="appbar">
+    <div style="font-weight:800; font-size:18px">🚗 Delivery Route Optimizer</div>
+    <div style="display:flex; gap:8px;">
+      <button id="themeBtn" class="btn ghost">Toggle Dark</button>
+      <button id="clearAll" class="btn ghost">Clear</button>
+    </div>
+  </header>
+
+  <div class="wrap">
+    <aside class="sidebar">
+      <h3 style="margin:0 0 8px 0">Planner</h3>
+      <div class="muted" style="margin-bottom:10px">Start from depot and add destinations (lat,lng). Click map to add points.</div>
+
+      <label>Start Location (lat,lng)</label>
+      <input id="start" placeholder="17.3850,78.4867" />
+
+      <label style="margin-top:10px">Destinations</label>
+      <div id="destList" class="dest-list">
+        <div class="dest-row">
+          <input class="dest" placeholder="17.40,78.50" />
+          <button class="btn ghost" title="Remove" onclick="this.closest('.dest-row').remove()">✖</button>
+        </div>
+      </div>
+
+      <div style="display:flex; gap:8px; margin-top:8px">
+        <button id="addBtn" class="btn ghost">➕ Add</button>
+        <button id="goBtn" class="btn">⚙️ Optimize</button>
+      </div>
+
+      <label style="margin-top:12px">Vehicle speed (km/h)</label>
+      <input id="vehSpeed" type="number" value="40" min="5" />
+
+      <label style="margin-top:8px">Fuel usage (L / 100 km)</label>
+      <input id="fuelUsage" type="number" value="8" min="0" />
+
+      <label style="margin-top:8px">Fuel price (per L)</label>
+      <input id="fuelPrice" type="number" value="95" min="0" />
+
+      <label style="margin-top:8px">Animation multiplier</label>
+      <select id="animSpeed" style="padding:8px; border-radius:8px;">
+        <option value="0.5">0.5x</option>
+        <option value="1" selected>1x</option>
+        <option value="2">2x</option>
+        <option value="4">4x</option>
+      </select>
+
+      <div style="display:flex; gap:8px; margin-top:12px">
+        <button id="exportGPX" class="btn ghost">⬇️ GPX</button>
+        <button id="exportKML" class="btn ghost">⬇️ KML</button>
+        <button id="exportPDF" class="btn ghost">📄 PDF</button>
+      </div>
+
+      <div style="margin-top:14px">
+        <div class="muted">Route summary</div>
+        <div style="display:flex; gap:8px; margin-top:8px;">
+          <div style="background:var(--card); border-radius:8px; padding:10px; flex:1;">
+            <div class="muted">Distance</div>
+            <div id="distText" style="font-weight:800">-</div>
+          </div>
+          <div style="background:var(--card); border-radius:8px; padding:10px; width:120px;">
+            <div class="muted">Time</div>
+            <div id="timeText" style="font-weight:800">-</div>
+          </div>
+        </div>
+      </div>
+
+      <div style="margin-top:12px">
+        <div class="muted">Steps</div>
+        <div id="stepsList" style="margin-top:8px; max-height:140px; overflow:auto; padding:8px; border-radius:8px; background:linear-gradient(180deg, rgba(0,0,0,0.02), transparent)">(no route)</div>
+      </div>
+
+      <!-- Saved Routes panel -->
+      <div class="saved-panel" id="savedPanel">
+        <div style="display:flex; gap:8px; align-items:center;">
+          <input id="saveName" placeholder="Save name (e.g. Downtown run)" />
+          <button id="saveRouteBtn" class="btn ghost" style="width:110px;">💾 Save</button>
+        </div>
+        <div style="margin-top:10px; font-weight:700; color:var(--muted)">Saved Routes</div>
+        <div id="savedList" style="margin-top:8px; max-height:160px; overflow:auto;"></div>
+      </div>
+
+      <div style="margin-top:12px">
+        <div class="muted">Navigation</div>
+        <div style="display:flex; gap:8px; margin-top:8px;">
+          <button id="panStart" class="btn ghost">📍 Go to Start</button>
+          <button id="nextWp" class="btn ghost">➡ Next</button>
+          <button id="prevWp" class="btn ghost">⬅ Prev</button>
+        </div>
+      </div>
+
+    </aside>
+
+    <main class="mapcard">
+      <div id="map"></div>
+
+      <div class="anim-overlay" style="pointer-events:none">
+        <div class="anim-panel" style="pointer-events:auto">
+          <div class="status-bubble" id="animStatus">Stopped</div>
+          <div style="display:flex; flex-direction:column; margin-left:8px;">
+            <div class="muted">Progress</div>
+            <div class="progress-wrap">
+              <div class="progress"><i id="progBar"></i></div>
+              <div style="display:flex; gap:8px; align-items:center; justify-content:space-between;">
+                <div class="muted" id="progPct">0%</div>
+                <div class="muted" id="etaRem">ETA: -</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="anim-panel" style="pointer-events:auto">
+          <button id="playAnim" class="btn">▶ Play</button>
+          <button id="pauseAnim" class="btn ghost">⏸ Pause</button>
+          <button id="resumeAnim" class="btn ghost">⏵ Resume</button>
+          <button id="stopAnim" class="btn ghost">■ Stop</button>
+          <button id="zoomToAll" class="btn ghost">🔍 Fit</button>
+        </div>
+      </div>
+    </main>
+  </div>
+
+<script>
+/* ----------------- utilities ----------------- */
+function toRad(v){ return v * Math.PI / 180; }
+function haversine(a,b){
+  const R = 6371; // km
+  const dLat = toRad(b[0]-a[0]), dLon = toRad(b[1]-a[1]);
+  const la1 = toRad(a[0]), la2 = toRad(b[0]);
+  const s1 = Math.sin(dLat/2), s2 = Math.sin(dLon/2);
+  const aa = s1*s1 + Math.cos(la1)*Math.cos(la2)*s2*s2;
+  return R * 2 * Math.atan2(Math.sqrt(aa), Math.sqrt(1-aa));
+}
+function clamp(v,a,b){ return Math.max(a, Math.min(b, v)); }
+function eqLatLng(a,b,eps=1e-5){ return Math.abs(a[0]-b[0])<eps && Math.abs(a[1]-b[1])<eps; }
+
+/* ----------------- map & core state ----------------- */
+const map = L.map('map').setView([17.3850,78.4867], 11);
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19, attribution:''}).addTo(map);
+
+let markers = [], routeLine = null, trip = null, waypoints = [];
+let currentWpIndex = 0;
+
+const animState = {
+  timeline: [],     // array of segments {start:[lat,lng],end:[lat,lng],durationSec,accumulateEndSec}
+  totalSec: 0,
+  startTs: null,
+  pausedAt: null,
+  running: false,
+  paused: false,
+  tickId: null,
+  marker: null
+};
+let animCoordsSample = []; // polyline coords for animation
+
+/* ----------------- DOM elements ----------------- */
+const startInput = document.getElementById('start');
+const addBtn = document.getElementById('addBtn');
+const goBtn = document.getElementById('goBtn');
+const destList = document.getElementById('destList');
+const distText = document.getElementById('distText');
+const timeText = document.getElementById('timeText');
+const stepsList = document.getElementById('stepsList');
+const exportGPX = document.getElementById('exportGPX');
+const exportKML = document.getElementById('exportKML');
+const exportPDF = document.getElementById('exportPDF');
+const vehSpeed = document.getElementById('vehSpeed');
+const animSpeed = document.getElementById('animSpeed');
+const fuelUsage = document.getElementById('fuelUsage');
+const fuelPrice = document.getElementById('fuelPrice');
+
+const playAnim = document.getElementById('playAnim');
+const pauseAnim = document.getElementById('pauseAnim');
+const resumeAnim = document.getElementById('resumeAnim');
+const stopAnim = document.getElementById('stopAnim');
+const zoomToAll = document.getElementById('zoomToAll');
+const progBar = document.getElementById('progBar');
+const progPct = document.getElementById('progPct');
+const etaRem = document.getElementById('etaRem');
+const animStatus = document.getElementById('animStatus');
+const themeBtn = document.getElementById('themeBtn');
+const clearAll = document.getElementById('clearAll');
+
+const saveName = document.getElementById('saveName');
+const saveRouteBtn = document.getElementById('saveRouteBtn');
+const savedList = document.getElementById('savedList');
+
+const panStart = document.getElementById('panStart');
+const nextWp = document.getElementById('nextWp');
+const prevWp = document.getElementById('prevWp');
+
+startInput.value = '17.3850,78.4867';
+
+/* ----------------- UI helpers ----------------- */
+function parseLatLng(str){
+  if(!str) return null;
+  const parts = str.split(',').map(s=>s.trim());
+  if(parts.length<2) return null;
+  const lat = Number(parts[0]), lon = Number(parts[1]);
+  return Number.isFinite(lat) && Number.isFinite(lon) ? {lat, lon} : null;
+}
+
+function clearMap(){
+  markers.forEach(m=>map.removeLayer(m)); markers=[];
+  if(routeLine){ map.removeLayer(routeLine); routeLine = null; }
+  if(animState.marker){ try{ map.removeLayer(animState.marker); }catch(e){} animState.marker=null; }
+  trip = null; waypoints = []; animCoordsSample = [];
+  stopAnimationImmediate();
+  distText.innerText = '-'; timeText.innerText = '-'; stepsList.innerHTML='(no route)';
+  progBar.style.width='0%'; progPct.innerText='0%'; etaRem.innerText='ETA: -'; animStatus.innerText='Stopped';
+}
+
+/* Short marker helper */
+function addMarker(lat, lon, label, opts={}){
+  const iconHtml = opts.end ? `<div style="padding:6px 10px;border-radius:8px;background:#ff4757;color:#fff;font-weight:700">${label}</div>`
+                            : `<div style="width:34px;height:34px;border-radius:50%;display:flex;align-items:center;justify-content:center;background:linear-gradient(90deg,var(--accent-from),var(--accent-to));color:#fff;font-weight:800">${label}</div>`;
+  const icon = L.divIcon({html:iconHtml, iconSize:[34,34], iconAnchor:[17,17]});
+  const m = L.marker([lat,lon], {icon}).addTo(map);
+  markers.push(m);
+  return m;
+}
+
+/* ----------------- add destination UI ----------------- */
+addBtn.onclick = ()=> {
+  const row = document.createElement('div'); row.className='dest-row';
+  row.innerHTML = `<input class="dest" placeholder="17.40,78.50" /><button class="btn ghost">✖</button>`;
+  row.querySelector('button').onclick = ()=> row.remove();
+  destList.appendChild(row);
+  row.querySelector('input').focus();
+};
+
+/* ----------------- gather points ----------------- */
+function gatherPoints(){
+  const start = parseLatLng(startInput.value);
+  if(!start){ alert('Enter valid start (lat,lng)'); return null; }
+  const destInputs = Array.from(document.querySelectorAll('.dest'));
+  const dests = destInputs.map(i=>parseLatLng(i.value)).filter(Boolean);
+  return [start, ...dests];
+}
+
+/* ----------------- Build route via OSRM (trip) ----------------- */
+async function buildRoute(){
+  const pts = gatherPoints(); if(!pts) return;
+  clearMap();
+  const coords = pts.map(p=>`${p.lon},${p.lat}`).join(';');
+  const url = `https://router.project-osrm.org/trip/v1/driving/${coords}?source=first&roundtrip=true&overview=full&geometries=geojson&steps=true`;
+  try{
+    const res = await fetch(url);
+    if(!res.ok) throw new Error('OSRM status '+res.status);
+    const data = await res.json();
+    if(!data.trips || !data.trips.length) { alert('No route found'); return; }
+    trip = data.trips[0];
+    waypoints = data.waypoints;
+    // place markers in visit order
+    waypoints.sort((a,b)=> a.waypoint_index - b.waypoint_index).forEach((wp, idx)=>{
+      const lat=wp.location[1], lon=wp.location[0];
+      const label = idx===0 ? 'Start' : (idx===waypoints.length-1 ? 'End' : `${idx}`);
+      addMarker(lat, lon, label, { end: idx===waypoints.length-1 });
+    });
+
+    // poly coords
+    let coordsGeo = trip.geometry.coordinates.map(c=>[c[1], c[0]]);
+    const startCoord = [pts[0].lat, pts[0].lon];
+    if(!eqLatLng(coordsGeo[coordsGeo.length-1], startCoord)){
+      coordsGeo.push(startCoord);
+    }
+    animCoordsSample = coordsGeo.slice();
+    routeLine = L.polyline(coordsGeo, {color:'#2e86de', weight:5}).addTo(map);
+    fitToRoute();
+
+    // summary: distance/time/fuel
+    const distKm = trip.distance/1000;
+    const durationMin = Math.round(trip.duration/60);
+    const avgSpeed = Number(vehSpeed.value) || 40;
+    const estTimeHours = distKm / avgSpeed;
+    const estTimeMins = Math.round(estTimeHours * 60);
+    const fuelL = (distKm * (Number(fuelUsage.value) || 8)) / 100;
+    const fuelCostVal = fuelL * (Number(fuelPrice.value) || 0);
+
+    distText.innerText = `${distKm.toFixed(2)} km`;
+    timeText.innerText = `${Math.round(durationMin)} min (OSRM) • ETA ~ ${estTimeMins} min`;
+
+    // steps
+    const out = [];
+    trip.legs.forEach((leg, li)=>{
+      out.push(`<div style="font-weight:800; margin-top:8px">Leg ${li+1} • ${leg.summary || ''}</div>`);
+      leg.steps.forEach(s=>{
+        const instr = (s.maneuver && s.maneuver.instruction) ? s.maneuver.instruction : (s.name || 'Continue');
+        out.push(`<div style="font-size:13px; margin-left:6px">➤ ${instr} <span class="muted">(${(s.distance/1000).toFixed(2)} km)</span></div>`);
+      });
+    });
+    stepsList.innerHTML = out.join('');
+    // reset wp index
+    currentWpIndex = 0;
+    alert('Route ready — use Play to animate.');
+  }catch(err){
+    console.error(err);
+    alert('Error building route: '+err.message);
+  }
+}
+
+/* ----------------- exports (GPX/KML/PDF) ----------------- */
+function buildGPX(){ if(!animCoordsSample || animCoordsSample.length===0){ alert('No route'); return null; }
+  const trkseg = animCoordsSample.map(c=>({lat:c[0], lon:c[1]}));
+  let g = `<?xml version="1.0" encoding="UTF-8"?>\n<gpx creator="DeliveryRoute-Premium" version="1.1" xmlns="http://www.topografix.com/GPX/1/1">\n`;
+  g += `<trk><trkseg>\n`;
+  trkseg.forEach(p=> g += `<trkpt lat="${p.lat}" lon="${p.lon}"></trkpt>\n`);
+  g += `</trkseg></trk>\n</gpx>`;
+  return g;
+}
+function downloadFile(name, content, mime='text/plain'){ const blob=new Blob([content],{type:mime}); const url=URL.createObjectURL(blob); const a=document.createElement('a'); a.href=url; a.download=name; document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url); }
+
+exportGPX.onclick = ()=> { if(!animCoordsSample || animCoordsSample.length===0) return alert('Optimize route first.'); downloadFile('route.gpx', buildGPX(), 'application/gpx+xml'); };
+exportKML.onclick = ()=> { if(!animCoordsSample || animCoordsSample.length===0) return alert('Optimize route first.'); let k=`<?xml version="1.0"?><kml xmlns="http://www.opengis.net/kml/2.2"><Document><Placemark><LineString><coordinates>`; animCoordsSample.forEach(c=> k += `${c[1]},${c[0]},0 `); k += `</coordinates></LineString></Placemark></Document></kml>`; downloadFile('route.kml', k, 'application/vnd.google-earth.kml+xml'); };
+exportPDF.onclick = async ()=> { if(!animCoordsSample || animCoordsSample.length===0) return alert('Optimize route first.'); const { jsPDF } = window.jspdf; const doc = new jsPDF(); doc.text('Route Summary',20,20); doc.text(`Distance: ${distText.innerText}`,20,40); doc.text(`Time: ${timeText.innerText}`,20,55); doc.save('route-summary.pdf'); };
+
+/* ----------------- timeline builder for animation ----------------- */
+function buildTimelineFromCoords(coordsGeo){
+  const speedKmh = Number(vehSpeed.value) || 40;
+  const multiplier = Number(animSpeed.value) || 1;
+  const timeline = [];
+  let accumulate = 0;
+  for(let i=0;i<coordsGeo.length-1;i++){
+    const a = coordsGeo[i], b = coordsGeo[i+1];
+    const len = haversine(a,b); // km
+    const durationSec = (len / speedKmh) * 3600 / multiplier;
+    accumulate += durationSec;
+    timeline.push({ start: a, end: b, lengthKm: len, durationSec, accumulateEndSec: accumulate });
+  }
+  animState.timeline = timeline;
+  animState.totalSec = accumulate;
+  return { timeline, totalSec: accumulate };
+}
+
+/* ----------------- animation engine ----------------- */
+function placeOrUpdateAnimMarker(latlng){
+  if(!animState.marker){
+    animState.marker = L.marker(latlng, {
+      icon: L.divIcon({ html:'🚗', className:'', iconSize:[34,34], iconAnchor:[17,17] })
+    }).addTo(map);
+  } else animState.marker.setLatLng(latlng);
+}
+
+function computePositionAtSec(t){
+  const tl = animState.timeline;
+  if(!tl || tl.length===0) return null;
+  if(t<=0) return tl[0].start;
+  if(t>=animState.totalSec) return tl[tl.length-1].end;
+  let prev=0;
+  for(let i=0;i<tl.length;i++){
+    const seg = tl[i];
+    if(t <= seg.accumulateEndSec){
+      const segElapsed = t - prev;
+      const frac = clamp(segElapsed / seg.durationSec, 0, 1);
+      const lat = seg.start[0] + (seg.end[0] - seg.start[0]) * frac;
+      const lng = seg.start[1] + (seg.end[1] - seg.start[1]) * frac;
+      return [lat, lng];
+    }
+    prev = seg.accumulateEndSec;
+  }
+  return tl[tl.length-1].end;
+}
+
+function updateProgressUI(pct, remainingSec){
+  const p = Math.round(pct*100);
+  progBar.style.width = p + '%';
+  progPct.innerText = p + '%';
+  if(remainingSec<=0) etaRem.innerText = 'ETA: 0s';
+  else {
+    const m = Math.floor(remainingSec/60), s = Math.round(remainingSec%60);
+    etaRem.innerText = `ETA: ${m}m ${s}s`;
+  }
+}
+
+/* internal tick */
+function _tick(){
+  const now = performance.now()/1000;
+  const elapsed = now - animState.startTs;
+  if(elapsed >= animState.totalSec){
+    placeOrUpdateAnimMarker(animState.timeline[animState.timeline.length-1].end);
+    updateProgressUI(1, 0);
+    stopAnimationImmediate(true);
+    return;
+  }
+  const pos = computePositionAtSec(elapsed);
+  if(pos) placeOrUpdateAnimMarker(pos);
+  updateProgressUI(clamp(elapsed / animState.totalSec, 0, 1), Math.max(0, animState.totalSec - elapsed));
+  animState.tickId = requestAnimationFrame(_tick);
+}
+
+function startAnimation(){
+  if(!animCoordsSample || animCoordsSample.length===0){ alert('Optimize route first'); return; }
+  buildTimelineFromCoords(animCoordsSample);
+  if(animState.totalSec <= 0){ alert('Route too short'); return; }
+
+  // fresh start
+  animState.startTs = performance.now()/1000;
+  animState.running = true;
+  animState.paused = false;
+  animState.pausedAt = null;
+
+  animStatus.innerText = 'Playing';
+  playAnim.innerText = '⏸ Pause';
+
+  if(animState.tickId) cancelAnimationFrame(animState.tickId);
+  animState.tickId = requestAnimationFrame(_tick);
+}
+
+function pauseAnimation(){
+  if(!animState.running || animState.paused) return;
+  const now = performance.now()/1000;
+  animState.pausedAt = now - animState.startTs; // seconds elapsed before pause
+  animState.paused = true;
+  animStatus.innerText = 'Paused';
+  playAnim.innerText = '▶ Play';
+  if(animState.tickId) { cancelAnimationFrame(animState.tickId); animState.tickId = null; }
+}
+
+function resumeAnimation(){
+  if(!animState.paused || animState.pausedAt == null) return;
+  animState.startTs = performance.now()/1000 - animState.pausedAt;
+  animState.paused = false;
+  animState.running = true;
+  animState.pausedAt = null;
+  animStatus.innerText = 'Playing';
+  playAnim.innerText = '⏸ Pause';
+  if(animState.tickId) cancelAnimationFrame(animState.tickId);
+  animState.tickId = requestAnimationFrame(_tick);
+}
+
+function stopAnimationImmediate(finished=false){
+  if(animState.tickId) { cancelAnimationFrame(animState.tickId); animState.tickId = null; }
+  animState.running = false; animState.paused = false; animState.pausedAt = null;
+  animStatus.innerText = finished ? 'Finished' : 'Stopped';
+  playAnim.innerText = '▶ Play';
+  if(animState.marker){ try{ map.removeLayer(animState.marker); }catch(e){} animState.marker=null; }
+  progBar.style.width = finished ? '100%' : '0%';
+  progPct.innerText = finished ? '100%' : '0%';
+  etaRem.innerText = 'ETA: -';
+}
+
+/* ----------------- button wiring (play/pause/resume) ----------------- */
+playAnim.onclick = ()=> {
+  if(!animState.running && !animState.paused){
+    startAnimation();
+    return;
+  }
+  if(animState.running && !animState.paused){
+    pauseAnimation();
+    return;
+  }
+  if(animState.paused){
+    resumeAnimation();
+    return;
+  }
+};
+pauseAnim.onclick = ()=> pauseAnimation();
+resumeAnim.onclick = ()=> resumeAnimation();
+stopAnim.onclick = ()=> stopAnimationImmediate(false);
+
+/* ----------------- navigation: pan, next/prev waypoint ----------------- */
+zoomToAll.onclick = ()=> {
+  if(routeLine) map.fitBounds(routeLine.getBounds(), {padding:[40,40]});
+  else if(markers.length){ const g=L.featureGroup(markers); map.fitBounds(g.getBounds(), {padding:[40,40]}); }
+};
+
+panStart.onclick = ()=> {
+  const s = parseLatLng(startInput.value);
+  if(!s) { alert('Start not set'); return; }
+  map.panTo([s.lat, s.lon]);
+};
+
+nextWp.onclick = ()=> {
+  if(!waypoints || waypoints.length===0) return;
+  currentWpIndex = Math.min(currentWpIndex+1, waypoints.length-1);
+  const wp = waypoints[currentWpIndex].location;
+  map.panTo([wp[1], wp[0]]);
+};
+
+prevWp.onclick = ()=> {
+  if(!waypoints || waypoints.length===0) return;
+  currentWpIndex = Math.max(currentWpIndex-1, 0);
+  const wp = waypoints[currentWpIndex].location;
+  map.panTo([wp[1], wp[0]]);
+};
+
+/* ----------------- map click: add destination ----------------- */
+map.on('click', (e)=>{
+  const lat = e.latlng.lat.toFixed(6), lng = e.latlng.lng.toFixed(6);
+  const row = document.createElement('div'); row.className='dest-row';
+  row.innerHTML = `<input class="dest" value="${lat},${lng}" /><button class="btn ghost">✖</button>`;
+  row.querySelector('button').onclick = ()=> row.remove();
+  destList.appendChild(row);
+});
+
+/* ----------------- bind build route ----------------- */
+goBtn.onclick = buildRoute;
+
+/* ----------------- fit, clear, theme ----------------- */
+function fitToRoute(){ if(routeLine) map.fitBounds(routeLine.getBounds(), {padding:[40,40]}); else if(markers.length){ const g=L.featureGroup(markers); map.fitBounds(g.getBounds(), {padding:[40,40]}); } }
+clearAll.onclick = ()=> { if(!confirm('Clear all?')) return; document.querySelectorAll('.dest').forEach((el,i)=>{ if(i===0) el.value=''; else el.closest('.dest-row').remove(); }); startInput.value=''; clearMap(); };
+themeBtn.onclick = ()=> { const cur=document.body.getAttribute('data-theme')||'light'; const next = cur==='light'?'dark':'light'; document.body.setAttribute('data-theme', next); };
+
+/* ----------------- small UX: Enter triggers optimize ----------------- */
+document.addEventListener('keydown', (e)=>{ if(e.key==='Enter'){ const active=document.activeElement; if(active && (active.tagName==='INPUT' || active.tagName==='SELECT')){ e.preventDefault(); buildRoute(); } } });
+
+/* ----------------- SAVED ROUTES (localStorage) ----------------- */
+function loadSavedList(){
+  const saved = JSON.parse(localStorage.getItem('savedRoutes') || '[]');
+  savedList.innerHTML = '';
+  saved.forEach((s, idx) => {
+    const div = document.createElement('div');
+    div.className = 'saved-list-item';
+    div.innerHTML = `<div style="flex:1;min-width:0"><strong style="display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${s.name}</strong>
+                     <small class="muted" style="display:block">${s.coords.length} points</small></div>
+                     <div style="display:flex;gap:6px">
+                       <button class="btn ghost" onclick="loadSavedRoute(${idx})">Load</button>
+                       <button class="btn ghost" onclick="deleteSaved(${idx})">Delete</button>
+                     </div>`;
+    savedList.appendChild(div);
+  });
+}
+
+function saveRoute(){
+  // current route coords: animCoordsSample if exists, otherwise gatherPoints
+  let coordsToSave = [];
+  if(animCoordsSample && animCoordsSample.length) coordsToSave = animCoordsSample.slice();
+  else {
+    const pts = gatherPoints();
+    if(!pts){ alert('No route to save. Build route first or add points.'); return; }
+    coordsToSave = pts.map(p => [p.lat, p.lon]);
+  }
+  if(!coordsToSave.length){ alert('No coords to save'); return; }
+  const name = (saveName.value || `Route ${new Date().toLocaleString()}`).trim();
+  const saved = JSON.parse(localStorage.getItem('savedRoutes') || '[]');
+  saved.push({ name, coords: coordsToSave });
+  localStorage.setItem('savedRoutes', JSON.stringify(saved));
+  loadSavedList();
+  saveName.value = '';
+  alert('Route saved!');
+}
+
+function loadSavedRoute(index){
+  const saved = JSON.parse(localStorage.getItem('savedRoutes') || '[]');
+  if(!saved[index]) return alert('Not found');
+  const coords = saved[index].coords;
+  if(routeLine) map.removeLayer(routeLine);
+  routeLine = L.polyline(coords, {color:'#2e86de', weight:5}).addTo(map);
+  animCoordsSample = coords.slice();
+  markers.forEach(m=>map.removeLayer(m)); markers=[];
+  addMarker(coords[0][0], coords[0][1], 'Start', { end:false });
+  addMarker(coords[coords.length-1][0], coords[coords.length-1][1], 'End', { end:true });
+  fitToRoute();
+  // fake trip summary minimal
+  const distKm = coords.reduce((s, c, i) => {
+    if(i===0) return 0;
+    return s + haversine(coords[i-1], coords[i]);
+  }, 0);
+  distText.innerText = `${distKm.toFixed(2)} km`;
+  timeText.innerText = `--`;
+  trip = { distance: distKm*1000, duration: 0, legs: [] };
+  alert(`Loaded saved route: ${saved[index].name}`);
+}
+
+function deleteSaved(index){
+  let saved = JSON.parse(localStorage.getItem('savedRoutes') || '[]');
+  saved.splice(index,1);
+  localStorage.setItem('savedRoutes', JSON.stringify(saved));
+  loadSavedList();
+}
+
+saveRouteBtn.onclick = saveRoute;
+loadSavedList(); // load on start
+
+</script>
+</body>
+</html>
