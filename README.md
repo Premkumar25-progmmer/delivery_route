@@ -14,12 +14,12 @@ A simple HTML-based web project that demonstrates a delivery route interface. Th
 - JavaScript (optional) – interactivity
 
 📂 Project Structure
-delivery_route/
-│── index.html        # Main webpage
-│── style.css         # Styling (if used)
-│── script.js         # Interactivity (if used)
-│── assets/           # Images, icons, or other resources
-│── README.md         # Documentation
+- delivery_route/
+- │── index.html        # Main webpage
+- │── style.css         # Styling (if used)
+- │── script.js         # Interactivity (if used)
+- │── assets/           # Images, icons, or other resources
+- │── README.md         # Documentation
 
 
 
